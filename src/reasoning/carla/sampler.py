@@ -1,140 +1,158 @@
 from __future__ import annotations
 
+from pathlib import Path
 import pandas as pd
 
 
+EVENT_COLUMNS = ["collision", "lane_invasion"]
+
+
+def read_carla_csv(csv_path: Path) -> pd.DataFrame:
+    """
+    Read a CARLA CSV file safely.
+    Automatically detects comma or semicolon separators.
+    """
+    return pd.read_csv(csv_path, sep=None, engine="python")
+
 def initialize_sampling_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add sampling columns if they do not already exist.
+    Add sampling columns used to mark selected frames.
+    """
+    df = df.copy()
+    df["sampled"] = 0
+    df["sample_reason"] = ""
+    return df
+
+
+def add_timestep_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add timestep if it does not already exist.
     """
     df = df.copy()
 
-    if "sampled" not in df.columns:
-        df["sampled"] = 0
-
-    if "sample_reason" not in df.columns:
-        df["sample_reason"] = ""
+    if "timestep" not in df.columns:
+        df["timestep"] = range(len(df))
 
     return df
 
 
-def sample_normal_scenario(
-    df: pd.DataFrame,
-    scenario_id: str,
-    step: int = 50
-) -> pd.DataFrame:
+def has_event(df: pd.DataFrame) -> bool:
     """
-    Sparse sampling for normal scenarios:
-    keep every `step`-th frame.
+    Check whether the scenario contains a collision or lane invasion event.
     """
-    df = df.copy()
+    for col in EVENT_COLUMNS:
+        if col in df.columns and (df[col] == 1).any():
+            return True
 
-    scenario_mask = df["scenario_id"] == scenario_id
-    scenario_df = df[scenario_mask].sort_values("timestep")
+    return False
 
-    selected_indices = scenario_df.iloc[::step].index
+
+def sample_sparse(df: pd.DataFrame, step: int = 25) -> pd.DataFrame:
+    """
+    Sample every `step` frames for normal scenarios.
+    Always keeps the last frame.
+    """
+    df = initialize_sampling_columns(df)
+    df = add_timestep_column(df)
+
+    df = df.sort_values("timestep").reset_index(drop=True)
+
+    selected_indices = df.iloc[::step].index
 
     df.loc[selected_indices, "sampled"] = 1
-    df.loc[selected_indices, "sample_reason"] = "normal_sparse"
+    df.loc[selected_indices, "sample_reason"] = "sparse"
 
-    # Make sure the last frame is also included
-    if len(scenario_df) > 0:
-        last_idx = scenario_df.index[-1]
+    if len(df) > 0:
+        last_idx = df.index[-1]
         df.loc[last_idx, "sampled"] = 1
-        df.loc[last_idx, "sample_reason"] = "normal_last_frame"
+        df.loc[last_idx, "sample_reason"] = "last_frame"
 
     return df
 
 
 def sample_event_window(
     df: pd.DataFrame,
-    scenario_id: str,
     before: int = 10,
-    after: int = 5
+    after: int = 5,
+    fallback_step: int = 25,
 ) -> pd.DataFrame:
     """
-    Event-centered sampling:
-    for each event frame (collision or lane_invasion),
-    keep a window of frames around it.
+    Sample frames around collision/lane invasion events.
+    If no event exists, fallback to sparse sampling.
     """
-    df = df.copy()
+    df = initialize_sampling_columns(df)
+    df = add_timestep_column(df)
 
-    scenario_mask = df["scenario_id"] == scenario_id
-    scenario_df = df[scenario_mask].sort_values("timestep")
+    df = df.sort_values("timestep").reset_index(drop=True)
 
-    event_df = scenario_df[
-        (scenario_df["collision"] == 1) | (scenario_df["lane_invasion"] == 1)
-    ]
+    event_mask = pd.Series(False, index=df.index)
 
-    if event_df.empty:
-        return df
+    for col in EVENT_COLUMNS:
+        if col in df.columns:
+            event_mask = event_mask | (df[col] == 1)
 
-    scenario_indices = scenario_df.index.tolist()
+    event_indices = df[event_mask].index.tolist()
 
-    for event_idx in event_df.index:
-        pos = scenario_indices.index(event_idx)
+    if not event_indices:
+        return sample_sparse(df, step=fallback_step)
 
-        start_pos = max(0, pos - before)
-        end_pos = min(len(scenario_indices) - 1, pos + after)
+    for event_idx in event_indices:
+        start_idx = max(0, event_idx - before)
+        end_idx = min(len(df) - 1, event_idx + after)
 
-        selected_window = scenario_indices[start_pos:end_pos + 1]
+        window_indices = list(range(start_idx, end_idx + 1))
 
-        for idx in selected_window:
-            if df.loc[idx, "sampled"] == 0:
-                df.loc[idx, "sampled"] = 1
-                df.loc[idx, "sample_reason"] = "event_window"
+        df.loc[window_indices, "sampled"] = 1
+        df.loc[window_indices, "sample_reason"] = "event_window"
 
-        # Mark the exact event frame explicitly
         df.loc[event_idx, "sampled"] = 1
         df.loc[event_idx, "sample_reason"] = "event_frame"
 
     return df
 
 
-def apply_sampling_strategy(
-    df: pd.DataFrame,
-    normal_step: int = 50,
+def sample_scenario_csv(
+    csv_path: str | Path,
+    output_csv_path: str | Path | None = None,
+    normal_step: int = 25,
     event_before: int = 10,
-    event_after: int = 5
+    event_after: int = 5,
 ) -> pd.DataFrame:
     """
-    Apply scenario-aware sampling strategy to the full master dataframe.
+    Apply sampling to one independent CARLA scenario CSV.
 
-    Strategy:
-    - normal scenarios -> sparse sampling
-    - hazard/collision scenarios -> event-centered sampling
+    If the scenario contains events, event-centered sampling is used.
+    Otherwise, sparse sampling is used.
     """
-    df = initialize_sampling_columns(df)
+    csv_path = Path(csv_path)
+    df = read_carla_csv(csv_path)
 
-    for scenario_id in df["scenario_id"].unique():
-        scenario_df = df[df["scenario_id"] == scenario_id]
+    if has_event(df):
+        sampled_df = sample_event_window(
+            df,
+            before=event_before,
+            after=event_after,
+            fallback_step=normal_step,
+        )
+    else:
+        sampled_df = sample_sparse(
+            df,
+            step=normal_step,
+        )
 
-        if scenario_df.empty:
-            continue
+    if output_csv_path is not None:
+        output_csv_path = Path(output_csv_path)
+        output_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        sampled_df.to_csv(output_csv_path, index=False)
 
-        scenario_type = scenario_df["scenario_type"].iloc[0]
-
-        if scenario_type == "normal":
-            df = sample_normal_scenario(
-                df,
-                scenario_id=scenario_id,
-                step=normal_step
-            )
-        else:
-            df = sample_event_window(
-                df,
-                scenario_id=scenario_id,
-                before=event_before,
-                after=event_after
-            )
-
-    return df
+    return sampled_df
 
 
 def get_sampled_only(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Return only sampled rows, sorted for clean inference.
+    Return only sampled rows.
     """
-    sampled_df = df[df["sampled"] == 1].copy()
-    sampled_df = sampled_df.sort_values(["scenario_id", "timestep"]).reset_index(drop=True)
-    return sampled_df
+    if "sampled" not in df.columns:
+        raise ValueError("DataFrame does not contain a 'sampled' column.")
+
+    return df[df["sampled"] == 1].copy().reset_index(drop=True)

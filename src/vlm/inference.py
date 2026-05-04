@@ -1,26 +1,31 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Any, Tuple
+from typing import Any
 
+import pandas as pd
 from tqdm import tqdm
 
-from config import (
-    SAMPLED_CSV_PATH,
+from src.vlm.config import (
+    SCENARIOS,
+    SAMPLED_CSV_DIR,
     RAW_SCENARIOS_DIR,
     WINDOW_SIZE,
-    IMAGE_NAME_COLUMN,
 )
-from utils_io import (
-    load_sampled_dataset,
+
+from src.vlm.utils_io import (
     sort_scenario_df,
     build_image_path,
     validate_image_path,
-    group_by_scenario,
     create_windows_from_df,
 )
-from model_cpu import QwenVLInference
 
+from src.vlm.model_gpu import QwenVLInference
+
+
+# =========================
+# VALID VLM OUTPUT VALUES
+# =========================
 
 ALLOWED_VALUES = {
     "hazard_level": {"low", "medium", "high"},
@@ -33,16 +38,61 @@ ALLOWED_VALUES = {
 
 REQUIRED_KEYS = list(ALLOWED_VALUES.keys())
 
+
+# =========================
+# PRIORITIES FOR WINDOW AGGREGATION
+# =========================
+
 HAZARD_PRIORITY = {"low": 0, "medium": 1, "high": 2}
 ACTION_URGENCY_PRIORITY = {"continue": 0, "slow": 1, "brake": 2}
 BINARY_PRIORITY = {"no": 0, "yes": 1}
 LANE_PRIORITY = {"safe": 0, "unsafe": 1}
 
 
-def extract_json_object(raw_text: str) -> Dict[str, Any]:
-    raw_text = raw_text.strip()
+# =========================
+# DATA LOADING
+# =========================
 
-    # tolerate markdown fences if model outputs them
+def load_all_sampled_scenarios() -> pd.DataFrame:
+    """
+    Load the sampled CSV files for all CARLA scenarios.
+
+    Each sampled CSV does not originally contain scenario_name,
+    so we add it here to preserve scenario identity.
+    """
+    all_dfs: list[pd.DataFrame] = []
+
+    for scenario_name in SCENARIOS:
+        csv_name = f"{scenario_name.replace(' ', '_')}.csv"
+        csv_path = SAMPLED_CSV_DIR / csv_name
+
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Sampled CSV not found: {csv_path}")
+
+        df = pd.read_csv(csv_path)
+
+        if "frame" not in df.columns:
+            raise KeyError(
+                f"Missing 'frame' column in {csv_path}. "
+                f"Available columns: {list(df.columns)}"
+            )
+
+        df["scenario_name"] = scenario_name
+        all_dfs.append(df)
+
+    return pd.concat(all_dfs, ignore_index=True)
+
+
+# =========================
+# JSON PARSING
+# =========================
+
+def extract_json_object(raw_text: str) -> dict[str, Any]:
+    """
+    Extract JSON object from raw VLM response.
+    Handles cases where the model accidentally adds markdown fences.
+    """
+    raw_text = raw_text.strip()
     raw_text = raw_text.replace("```json", "").replace("```", "").strip()
 
     start = raw_text.find("{")
@@ -56,6 +106,10 @@ def extract_json_object(raw_text: str) -> Dict[str, Any]:
 
 
 def normalize_value(key: str, value: str) -> str:
+    """
+    Normalize small variations in model output.
+    Example: 'slow down' -> 'slow'
+    """
     value = str(value).strip().lower()
 
     replacements = {
@@ -94,8 +148,11 @@ def normalize_value(key: str, value: str) -> str:
     return replacements.get(key, {}).get(value, value)
 
 
-def validate_output(data: Dict[str, Any]) -> Dict[str, str]:
-    validated: Dict[str, str] = {}
+def validate_output(data: dict[str, Any]) -> dict[str, str]:
+    """
+    Ensure the VLM output has exactly the values expected by RL.
+    """
+    validated: dict[str, str] = {}
 
     for key in REQUIRED_KEYS:
         if key not in data:
@@ -111,48 +168,84 @@ def validate_output(data: Dict[str, Any]) -> Dict[str, str]:
     return validated
 
 
-def aggregate_window_outputs(outputs: List[Dict[str, str]]) -> Dict[str, str]:
-    if not outputs:
-        raise ValueError("Cannot aggregate an empty window")
+# =========================
+# WINDOW AGGREGATION
+# =========================
 
-    hazard = max(outputs, key=lambda x: HAZARD_PRIORITY[x["hazard_level"]])["hazard_level"]
-    obstacle = max(outputs, key=lambda x: BINARY_PRIORITY[x["obstacle_presence"]])["obstacle_presence"]
-    collision = max(outputs, key=lambda x: BINARY_PRIORITY[x["collision_risk"]])["collision_risk"]
-    lane = max(outputs, key=lambda x: LANE_PRIORITY[x["lane_safety"]])["lane_safety"]
-    pedestrian = max(
-        outputs,
-        key=lambda x: BINARY_PRIORITY[x["crossing_pedestrian_presence"]],
-    )["crossing_pedestrian_presence"]
-    urgency = max(outputs, key=lambda x: ACTION_URGENCY_PRIORITY[x["action_urgency"]])["action_urgency"]
+def aggregate_window_outputs(outputs: list[dict[str, str]]) -> dict[str, str]:
+    """
+    Aggregate frame-level VLM outputs into one window-level output.
+
+    Conservative logic:
+    - highest hazard wins
+    - yes beats no for obstacle/collision/pedestrian
+    - unsafe beats safe
+    - brake beats slow beats continue
+    """
+    if not outputs:
+        raise ValueError("Cannot aggregate an empty window.")
 
     return {
-        "hazard_level": hazard,
-        "obstacle_presence": obstacle,
-        "collision_risk": collision,
-        "lane_safety": lane,
-        "crossing_pedestrian_presence": pedestrian,
-        "action_urgency": urgency,
+        "hazard_level": max(
+            outputs,
+            key=lambda x: HAZARD_PRIORITY[x["hazard_level"]],
+        )["hazard_level"],
+
+        "obstacle_presence": max(
+            outputs,
+            key=lambda x: BINARY_PRIORITY[x["obstacle_presence"]],
+        )["obstacle_presence"],
+
+        "collision_risk": max(
+            outputs,
+            key=lambda x: BINARY_PRIORITY[x["collision_risk"]],
+        )["collision_risk"],
+
+        "lane_safety": max(
+            outputs,
+            key=lambda x: LANE_PRIORITY[x["lane_safety"]],
+        )["lane_safety"],
+
+        "crossing_pedestrian_presence": max(
+            outputs,
+            key=lambda x: BINARY_PRIORITY[x["crossing_pedestrian_presence"]],
+        )["crossing_pedestrian_presence"],
+
+        "action_urgency": max(
+            outputs,
+            key=lambda x: ACTION_URGENCY_PRIORITY[x["action_urgency"]],
+        )["action_urgency"],
     }
 
 
-def run_full_inference() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+# =========================
+# MAIN INFERENCE
+# =========================
+
+def run_full_inference() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Run VLM inference on all sampled CARLA scenario frames.
+
+    Returns:
+    - per_frame_records: one row per sampled frame
+    - per_window_records: one row per temporal window
+    """
     model = QwenVLInference()
 
-    df = load_sampled_dataset(SAMPLED_CSV_PATH)
+    df = load_all_sampled_scenarios()
 
-    per_frame_records: List[Dict[str, Any]] = []
-    per_window_records: List[Dict[str, Any]] = []
+    per_frame_records: list[dict[str, Any]] = []
+    per_window_records: list[dict[str, Any]] = []
 
-    grouped = group_by_scenario(df)
-
-    for scenario_name, scenario_df in grouped:
+    for scenario_name, scenario_df in df.groupby("scenario_name", sort=False):
         scenario_df = sort_scenario_df(scenario_df)
         windows = create_windows_from_df(scenario_df, WINDOW_SIZE)
 
         for window_idx, window_df in enumerate(
-            tqdm(windows, desc=f"Scenario {scenario_name}")
+            tqdm(windows, desc=f"VLM inference | {scenario_name}")
         ):
-            window_outputs: List[Dict[str, str]] = []
+            window_id = f"{scenario_name}_window_{window_idx:04d}"
+            window_outputs: list[dict[str, str]] = []
 
             for _, row in window_df.iterrows():
                 image_path = None
@@ -170,23 +263,23 @@ def run_full_inference() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
                     parse_status = "ok"
                     error_message = ""
 
-                except Exception as e:
-                    validated = {k: "" for k in REQUIRED_KEYS}
+                except Exception as exc:
+                    validated = {key: "" for key in REQUIRED_KEYS}
                     parse_status = "error"
-                    error_message = str(e)
+                    error_message = str(exc)
 
                     print("\n[FRAME ERROR]")
                     print("Scenario:", scenario_name)
-                    print("Window:", f"{scenario_name}_window_{window_idx:04d}")
-                    print("Row image:", row.get(IMAGE_NAME_COLUMN, ""))
+                    print("Window:", window_id)
+                    print("Frame:", row.get("frame", "N/A"))
                     print("Resolved path:", image_path if image_path is not None else "N/A")
                     print("Raw response:", raw_response if raw_response else "N/A")
                     print("Error:", error_message)
 
                 frame_record = {
                     "scenario_name": scenario_name,
-                    "window_id": f"{scenario_name}_window_{window_idx:04d}",
-                    "image_name": str(row.get(IMAGE_NAME_COLUMN, "")),
+                    "window_id": window_id,
+                    "frame": str(row.get("frame", "")),
                     "image_path": str(image_path) if image_path is not None else "",
                     "raw_model_output": raw_response,
                     "parse_status": parse_status,
@@ -194,7 +287,9 @@ def run_full_inference() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
                     **validated,
                 }
 
-                # preserve original CSV metadata
+                # Keep original CARLA metadata for RL:
+                # speed, steering, throttle, brake, collision, lane_invasion,
+                # sampled, sample_reason, timestep, etc.
                 for col in row.index:
                     if col not in frame_record:
                         frame_record[col] = row[col]
@@ -209,20 +304,36 @@ def run_full_inference() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
                 window_status = "ok"
                 window_error = ""
             else:
-                aggregated = {k: "" for k in REQUIRED_KEYS}
+                aggregated = {key: "" for key in REQUIRED_KEYS}
                 window_status = "error"
-                window_error = "One or more frame outputs failed to parse"
+                window_error = "One or more frame outputs failed."
 
             window_record = {
                 "scenario_name": scenario_name,
-                "window_id": f"{scenario_name}_window_{window_idx:04d}",
+                "window_id": window_id,
                 "num_frames": len(window_df),
-                "start_image": str(window_df.iloc[0][IMAGE_NAME_COLUMN]),
-                "end_image": str(window_df.iloc[-1][IMAGE_NAME_COLUMN]),
+                "start_frame": str(window_df.iloc[0]["frame"]),
+                "end_frame": str(window_df.iloc[-1]["frame"]),
                 "window_status": window_status,
                 "window_error": window_error,
                 **aggregated,
             }
+
+            # Keep useful physical metadata at window level too
+            if "speed" in window_df.columns:
+                window_record["mean_speed"] = window_df["speed"].mean()
+                window_record["max_speed"] = window_df["speed"].max()
+
+            if "collision" in window_df.columns:
+                window_record["collision"] = int(window_df["collision"].max())
+
+            if "lane_invasion" in window_df.columns:
+                window_record["lane_invasion"] = int(window_df["lane_invasion"].max())
+
+            if "sample_reason" in window_df.columns:
+                window_record["sample_reasons"] = ",".join(
+                    sorted(set(window_df["sample_reason"].astype(str)))
+                )
 
             per_window_records.append(window_record)
 

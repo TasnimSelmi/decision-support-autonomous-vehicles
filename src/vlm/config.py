@@ -3,8 +3,12 @@ import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-SAMPLED_CSV_PATH = PROJECT_ROOT / "data" / "samples" / "carla" / "sampled_dataset.csv"
-RAW_SCENARIOS_DIR = PROJECT_ROOT / "data" / "raw" / "carla_scenarios"
+# =========================
+# DATA PATHS
+# =========================
+
+RAW_SCENARIOS_DIR = PROJECT_ROOT / "data" / "raw" / "train"
+SAMPLED_CSV_DIR = PROJECT_ROOT / "data" / "samples" / "carla"
 
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "carla" / "vlm_results"
 RAW_OUTPUTS_DIR = OUTPUT_DIR / "raw"
@@ -13,16 +17,23 @@ TABLES_DIR = OUTPUT_DIR / "tables"
 RAW_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 TABLES_DIR.mkdir(parents=True, exist_ok=True)
 
-SCENARIO_COLUMN = "scenario_name"
-SCENARIO_ID_COLUMN = "scenario_id"
-IMAGE_NAME_COLUMN = "frame_name"
+# =========================
+# SCENARIOS
+# =========================
 
-SCENARIO_FOLDER_MAP = {
-    "scenario_01": "scenario1-Normal",
-    "scenario_02": "scenario2-LaneInvasion+collision",
-    "scenario_03": "scenario3-collision",
-    "scenario_04": "scenario4-carCollision",
-}
+SCENARIOS = [
+    "Night-mode",
+    "Rainy night mode",
+    "Collision",
+    "carCollision",
+]
+
+# =========================
+# COLUMNS
+# =========================
+
+FRAME_COLUMN = "frame"
+
 POSSIBLE_ORDER_COLUMNS = [
     "timestep",
     "frame_id",
@@ -30,12 +41,16 @@ POSSIBLE_ORDER_COLUMNS = [
     "image_index",
     "timestamp",
 ]
+# =========================
+# MODEL
+# =========================
 
 MODEL_NAME = "Qwen/Qwen2.5-VL-3B-Instruct"
-TORCH_DTYPE = torch.float32
-DEVICE = "cpu"
 
-MAX_NEW_TOKENS = 96
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+TORCH_DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
+
+MAX_NEW_TOKENS = 128
 DO_SAMPLE = False
 TEMPERATURE = 0.0
 

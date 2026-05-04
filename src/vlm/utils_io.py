@@ -6,34 +6,19 @@ from typing import Iterable, List, Dict, Any
 
 import pandas as pd
 
-from config import (
-    SCENARIO_COLUMN,
-    IMAGE_NAME_COLUMN,
+from src.vlm.config import (
     POSSIBLE_ORDER_COLUMNS,
     SUPPORTED_IMAGE_EXTENSIONS,
 )
 
 
 def load_sampled_dataset(csv_path: Path) -> pd.DataFrame:
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV not found: {csv_path}")
-
     df = pd.read_csv(csv_path)
 
-    if SCENARIO_COLUMN not in df.columns:
-        raise KeyError(
-            f"Missing required scenario column '{SCENARIO_COLUMN}'. "
-            f"Available columns: {list(df.columns)}"
-        )
-
-    if IMAGE_NAME_COLUMN not in df.columns:
-        raise KeyError(
-            f"Missing required image column '{IMAGE_NAME_COLUMN}'. "
-            f"Available columns: {list(df.columns)}"
-        )
+    if "frame" not in df.columns:
+        raise KeyError("Missing 'frame' column")
 
     return df
-
 
 def sort_scenario_df(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -49,24 +34,27 @@ def sort_scenario_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_image_path(row: pd.Series, raw_scenarios_dir: Path) -> Path:
     from pathlib import Path
-    from config import (
-        SCENARIO_ID_COLUMN,
-        IMAGE_NAME_COLUMN,
-        SCENARIO_FOLDER_MAP,
+
+    scenario_name = row["scenario_name"]
+    frame_value = row["frame"]
+
+    frame_path = Path(frame_value)
+
+    # try original path
+    image_path = raw_scenarios_dir / scenario_name / frame_path
+
+    if image_path.exists():
+        return image_path
+
+    # fallback (remove output/)
+    fallback = raw_scenarios_dir / scenario_name / frame_path.name
+
+    if fallback.exists():
+        return fallback
+
+    raise FileNotFoundError(
+        f"Image not found for scenario={scenario_name}, frame={frame_value}"
     )
-
-    scenario_id = str(row[SCENARIO_ID_COLUMN])
-    frame_name = str(row[IMAGE_NAME_COLUMN])
-
-    if scenario_id not in SCENARIO_FOLDER_MAP:
-        raise KeyError(f"Unknown scenario_id: {scenario_id}")
-
-    folder_name = SCENARIO_FOLDER_MAP[scenario_id]
-
-    # remove fake folder prefixes like output/ or output_headon/
-    clean_name = Path(frame_name).name
-
-    return raw_scenarios_dir / folder_name / folder_name / clean_name
 
 
 def validate_image_path(image_path: Path) -> None:

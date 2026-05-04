@@ -5,8 +5,18 @@ import torch
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 
-from config import MODEL_NAME, TORCH_DTYPE, DEVICE, MAX_NEW_TOKENS, DO_SAMPLE, TEMPERATURE
-from prompt import VLM_PROMPT
+from src.vlm.config import (
+    MODEL_NAME, 
+    TORCH_DTYPE, 
+    DEVICE, 
+    MAX_NEW_TOKENS, 
+    DO_SAMPLE, 
+    TEMPERATURE,
+)
+from src.vlm.prompt import ( 
+    VLM_PROMPT
+)
+
 
 
 class QwenVLInference:

@@ -1,6 +1,6 @@
-from config import RAW_OUTPUTS_DIR, TABLES_DIR
-from utils_io import save_jsonl, save_csv
-from inference import run_full_inference
+from src.vlm.config import RAW_OUTPUTS_DIR, TABLES_DIR
+from src.vlm.utils_io import save_jsonl, save_csv
+from src.vlm.inference import run_full_inference
 
 
 def main() -> None:
@@ -13,8 +13,6 @@ def main() -> None:
     save_csv(per_window_records, TABLES_DIR / "per_window_outputs.csv")
 
     print("Done.")
-    print(f"Per-frame JSONL: {RAW_OUTPUTS_DIR / 'per_frame_outputs.jsonl'}")
-    print(f"Per-window JSONL: {RAW_OUTPUTS_DIR / 'per_window_outputs.jsonl'}")
     print(f"Per-frame CSV: {TABLES_DIR / 'per_frame_outputs.csv'}")
     print(f"Per-window CSV: {TABLES_DIR / 'per_window_outputs.csv'}")
 
