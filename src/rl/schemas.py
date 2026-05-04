@@ -1,31 +1,44 @@
 from dataclasses import dataclass
+from typing import Dict, Any, Tuple
 
 
-@dataclass(frozen=True)
+@dataclass
+class CarlaObservation:
+    frame_path: str
+    speed: float
+    steering: float
+    throttle: float
+    brake: float
+    collision: int
+    lane_invasion: int
+
+
+@dataclass
 class DrivingState:
-    hazard_level: int
-    obstacle_presence: int
-    collision_risk: int
-    lane_unsafe: int
-    pedestrian_presence: int
-    speed_level: int
-
-    def as_tuple(self) -> tuple[int, int, int, int, int, int]:
-        return (
-            self.hazard_level,
-            self.obstacle_presence,
-            self.collision_risk,
-            self.lane_unsafe,
-            self.pedestrian_presence,
-            self.speed_level,
-        )
+    hazard_level: float
+    obstacle_presence: float
+    collision_risk: float
+    lane_unsafe: float
+    pedestrian_presence: float
+    speed_level: float
 
     def as_vector(self) -> list[float]:
         return [
-            self.hazard_level / 2.0,
+            float(self.hazard_level),
             float(self.obstacle_presence),
             float(self.collision_risk),
             float(self.lane_unsafe),
             float(self.pedestrian_presence),
-            self.speed_level / 2.0,
+            float(self.speed_level),
         ]
+
+    def as_tuple(self) -> Tuple[float, float, float, float, float, float]:
+        return tuple(self.as_vector())
+
+
+@dataclass
+class StepResult:
+    observation: CarlaObservation
+    reward: float
+    done: bool
+    info: Dict[str, Any]

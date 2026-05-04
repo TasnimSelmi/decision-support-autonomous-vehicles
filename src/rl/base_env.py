@@ -1,16 +1,16 @@
 from abc import ABC, abstractmethod
 
-from src.rl.action_space import DrivingAction
-from src.rl.schemas import DrivingState
 
-
-class BaseDrivingEnv(ABC):
-    @abstractmethod
-    def reset(self) -> DrivingState:
-        raise NotImplementedError
+class BaseRLEnv(ABC):
 
     @abstractmethod
-    def step(self, action: DrivingAction) -> tuple[DrivingState, float, bool, dict]:
-        raise NotImplementedError
-    
+    def reset(self):
+        pass
 
+    @abstractmethod
+    def step(self, action_id: int, vlm_output: dict | None = None):
+        pass
+
+    @abstractmethod
+    def close(self):
+        pass

@@ -1,5 +1,9 @@
 from pathlib import Path
-import torch
+
+try:
+    import torch
+except Exception:
+    torch = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,8 +51,8 @@ POSSIBLE_ORDER_COLUMNS = [
 
 MODEL_NAME = "Qwen/Qwen2.5-VL-3B-Instruct"
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-TORCH_DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
+DEVICE = "cuda" if torch is not None and torch.cuda.is_available() else "cpu"
+TORCH_DTYPE = torch.float16 if torch is not None and DEVICE == "cuda" else None
 
 MAX_NEW_TOKENS = 128
 DO_SAMPLE = False

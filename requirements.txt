@@ -1,12 +1,11 @@
-git+https://github.com/huggingface/transformers
-accelerate
+carla
+numpy
+pandas
+pillow
+tqdm
+matplotlib
 torch
 torchvision
-pillow
-pandas
-tqdm
+accelerate
+transformers @ git+https://github.com/huggingface/transformers
 qwen-vl-utils
-
-numpy
-
-matplotlib
