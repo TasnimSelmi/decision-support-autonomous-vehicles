@@ -1,14 +1,18 @@
+from __future__ import annotations
+
 import queue
 import random
+from typing import TYPE_CHECKING
 
 import carla
 
 from src.carla_scenarios import SCENARIOS
 from src.rl.action_space import action_to_carla_control
 from src.rl.base_env import BaseRLEnv
-from src.rl.config import RLConfig
-from src.rl.reward import compute_reward
 from src.rl.schemas import CarlaObservation, StepResult
+
+if TYPE_CHECKING:
+    from src.rl.config import RLConfig
 
 
 class OnlineCarlaEnv(BaseRLEnv):
@@ -58,6 +62,8 @@ class OnlineCarlaEnv(BaseRLEnv):
         return self._build_observation(image)
 
     def step(self, action_id: int, vlm_output: dict | None = None):
+        from src.rl.reward import compute_reward
+
         control = action_to_carla_control(action_id)
         self.vehicle.apply_control(control)
 
@@ -179,7 +185,7 @@ class OnlineCarlaEnv(BaseRLEnv):
 
         self.vehicle.set_autopilot(False)
 
-        for _ in range(50):
+        for _ in range(35):
             vehicle_bp = random.choice(self.bp.filter("vehicle.*"))
             vehicle = try_spawn_vehicle(vehicle_bp)
 
@@ -199,7 +205,7 @@ class OnlineCarlaEnv(BaseRLEnv):
                     return False
             return True
 
-        for _ in range(50):
+        for _ in range(35):
             for _ in range(100):
                 location = self.world.get_random_location_from_navigation()
 
@@ -272,37 +278,41 @@ class OnlineCarlaEnv(BaseRLEnv):
         self.lane_flag["value"] = 1
 
     def _destroy_actors(self):
-        for actor in [self.camera, self.collision_sensor, self.lane_sensor, self.vehicle]:
-            if actor is not None:
-                try:
-                    actor.stop()
-                except Exception:
-                    pass
-
-                try:
-                    actor.destroy()
-                except Exception:
-                    pass
-
-        for actor in self.vehicles:
+        def safe_stop(actor):
+            if actor is None:
+                return
             try:
-                actor.destroy()
+                actor.stop()
             except Exception:
                 pass
 
+        for actor in [self.camera, self.collision_sensor, self.lane_sensor]:
+            safe_stop(actor)
         for controller in self.walker_controllers:
+            safe_stop(controller)
+
+        actors = [
+            self.camera,
+            self.collision_sensor,
+            self.lane_sensor,
+            self.vehicle,
+            *self.vehicles,
+            *self.walker_controllers,
+            *self.walkers,
+        ]
+        destroy_commands = []
+
+        for actor in actors:
+            if actor is None:
+                continue
             try:
-                controller.stop()
-            except Exception:
-                pass
-            try:
-                controller.destroy()
+                destroy_commands.append(carla.command.DestroyActor(actor))
             except Exception:
                 pass
 
-        for walker in self.walkers:
+        if destroy_commands and self.client is not None:
             try:
-                walker.destroy()
+                self.client.apply_batch(destroy_commands)
             except Exception:
                 pass
 

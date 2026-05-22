@@ -6,7 +6,7 @@ import numpy as np
 
 from src.rl.action_space import ACTION_NAMES
 from src.rl.online.vlm_window import VLMWindowAggregator
-from src.rl.state_encoder import build_rl_only_state
+from src.rl.state_encoder import build_rl_only_state, build_vlm_rl_state
 
 
 def linear_epsilon(step: int, config) -> float:
@@ -24,27 +24,43 @@ def run_online_training_episode(
     use_vlm: bool = False,
     vlm_runner=None,
 ):
-    if use_vlm:
-        raise NotImplementedError(
-            "Online CARLA training is currently implemented for RL-only state."
-        )
-
     obs = env.reset()
     total_reward = 0.0
     last_loss = None
+    aggregator = VLMWindowAggregator(window_size=env.config.vlm_window_size)
 
     for step in range(env.config.max_steps_per_episode):
-        state = build_rl_only_state(obs)
+        raw_vlm_output = None
+        aggregated_vlm_output = None
+        vlm_fresh = 0
+
+        if use_vlm:
+            if vlm_runner is None:
+                raise ValueError("vlm_runner is required when use_vlm=True")
+
+            if step % env.config.vlm_interval_steps == 0:
+                raw_vlm_output = vlm_runner(obs.frame_path)
+                aggregator.add(raw_vlm_output)
+                vlm_fresh = 1
+
+            aggregated_vlm_output = aggregator.aggregate()
+            state = build_vlm_rl_state(obs, aggregated_vlm_output)
+        else:
+            state = build_rl_only_state(obs)
+
         epsilon = linear_epsilon(global_step, env.config)
         action_id = agent.select_action(state_vector=state, epsilon=epsilon)
 
         result = env.step(
             action_id=int(action_id),
-            vlm_output=None,
+            vlm_output=aggregated_vlm_output,
         )
 
         next_obs = result.observation
-        next_state = build_rl_only_state(next_obs)
+        if use_vlm:
+            next_state = build_vlm_rl_state(next_obs, aggregated_vlm_output)
+        else:
+            next_state = build_rl_only_state(next_obs)
 
         agent.replay_buffer.push(
             state=state,
@@ -81,8 +97,13 @@ def run_online_training_episode(
             "epsilon": epsilon,
             "loss": last_loss if last_loss is not None else "",
             "replay_size": len(agent.replay_buffer),
-            "raw_vlm_output": "",
-            "aggregated_vlm_output": "",
+            "vlm_fresh": vlm_fresh,
+            "raw_vlm_output": json.dumps(raw_vlm_output) if raw_vlm_output else "",
+            "aggregated_vlm_output": (
+                json.dumps(aggregated_vlm_output)
+                if aggregated_vlm_output
+                else ""
+            ),
             "next_frame_path": next_obs.frame_path,
             "next_speed": next_obs.speed,
             "next_collision": next_obs.collision,

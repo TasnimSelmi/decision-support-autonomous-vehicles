@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from enum import IntEnum
-import carla
 
 
 class DrivingAction(IntEnum):
@@ -25,7 +26,9 @@ def action_to_name(action: int | DrivingAction) -> str:
     return ACTION_NAMES.get(int(action), str(action))
 
 
-def action_to_carla_control(action_id: int) -> carla.VehicleControl:
+def action_to_carla_control(action_id: int):
+    import carla
+
     action = DrivingAction(action_id)
 
     if action == DrivingAction.CONTINUE:

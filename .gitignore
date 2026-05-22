@@ -1,4 +1,7 @@
 .venv/
+carla_env_37/
+rl_env_312/
+.vscode/
 __pycache__/
 *.pyc
 outputs/

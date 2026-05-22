@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from src.rl.agents.dqn import DQNAgent
 from src.rl.config import RLConfig
-from src.rl.online.carla_env import OnlineCarlaEnv
+from src.rl.offline.agents.dqn import DQNAgent
 from src.rl.online.online_logger import OnlineLogger
+from src.rl.online.remote_carla_env import RemoteCarlaEnv
 from src.rl.online.training_runner import run_online_training_episode
 from src.rl.utils.io import ensure_dirs
 
 
 def main() -> None:
     config = RLConfig()
-    scenarios = config.train_scenarios
     checkpoint_interval = 10
     online_model_dir = config.project_root / "models" / "online"
 
@@ -32,18 +31,16 @@ def main() -> None:
 
     agent = DQNAgent(
         state_dim=config.rl_only_state_dim,
-        action_dim=config.action_dim,
-        config=config,
+        num_actions=config.action_dim,
+        learning_rate=config.learning_rate,
+        gamma=config.gamma,
+        replay_capacity=config.replay_capacity,
     )
 
     global_step = 0
 
-    for scenario_name in scenarios:
-        env = OnlineCarlaEnv(
-            config=config,
-            scenario_name=scenario_name,
-        )
-
+    for scenario_name in config.train_scenarios:
+        env = RemoteCarlaEnv(config=config, scenario_name=scenario_name)
         logger = OnlineLogger(
             config.online_output_dir / scenario_name / "online_training_results.csv"
         )
@@ -71,15 +68,11 @@ def main() -> None:
 
                     if completed_episodes < config.num_episodes:
                         env.close()
-                        env = OnlineCarlaEnv(
-                            config=config,
-                            scenario_name=scenario_name,
-                        )
+                        env = RemoteCarlaEnv(config=config, scenario_name=scenario_name)
                         print(
-                            "ONLINE ENV RESTART | "
+                            "ONLINE WORKER RESTART | "
                             f"scenario={scenario_name} | after_episode={episode_id}"
                         )
-
         finally:
             logger.save()
             env.close()
